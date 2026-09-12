@@ -1,0 +1,20 @@
+# Geteilte Regel-Module der 121-Apps-Flotte.
+#
+# Reine stdlib. Diese Schicht kennt weder SQLAlchemy noch Stripe noch FastAPI:
+# sie besitzt Entscheidungen, die App besitzt ihre Tabellen.
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apps121-core"
+version = "0.1.0"
+description = "Geteilte Regel-Module der 121-Apps-Flotte (stdlib-only)"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.setuptools]
+packages = ["apps121_core"]
+
+[tool.setuptools.package-data]
+apps121_core = ["py.typed"]

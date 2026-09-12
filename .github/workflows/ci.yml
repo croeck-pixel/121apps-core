@@ -1,0 +1,23 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  tests:
+    name: pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pytest
+      - run: python -m pytest tests/ -q
+  paket:
+    name: Paket baut und importiert
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install --target /tmp/probe .
+      - run: PYTHONPATH=/tmp/probe python -c "from apps121_core.gutschein_regeln import pruefen, provision; print('ok')"
