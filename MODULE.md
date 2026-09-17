@@ -20,6 +20,8 @@
 | [`ordner.py`](ordner.py) | Ordner: Kardinalität, Entfernen-Entscheidung, Löschfolgen, Wurzelansicht, Rechte ([Spec](../../docs/FLEET_FOLDERS_SPEC.md)) | 30.08.2026 |
 | [`platzhalter.py`](platzhalter.py) | Dass `{count}` eine Übersetzung überlebt — mechanisch, nicht per Prompt-Bitte | 01.09.2026 |
 | [`rate_limit.py`](rate_limit.py) | Wie oft dieselbe Herkunft einen Auth-Endpunkt aufrufen darf | 04.09.2026 |
+| [`support_zugriff.py`](support_zugriff.py) | Wann der Plattform-Support ein Konto öffnen darf: Einwilligung, Anfrage, Frist, Widerruf, Sitzungsende ([Spec](../../docs/FLEET_SUPPORT_ZUGRIFF_SPEC.md)) | 17.09.2026 |
+| [`zugangs_token.py`](zugangs_token.py) | Woher das Access-Token einer Anfrage kommt — eine Antwort für Auth-Dependency UND Write-Guard ([FLEET_ADMIN_SPEC §2.2](../../docs/FLEET_ADMIN_SPEC.md#22-write-guard-pflicht--keine-impersonation-ohne)) | 17.09.2026 |
 
 ## `refresh_rotation` — warum es das gibt
 
@@ -601,3 +603,44 @@ für eine Wortgrenze ist `_count@` kein eigenes Wort. Der Testsatz friert genau
 das ein — mit einem absichtlich gierigen Übersetzer, der jedes Wort ersetzt,
 das er kennt (`tests/test_platzhalter.py`, 35 Fälle).
 
+
+## `support_zugriff` und `zugangs_token` — warum es das gibt
+
+In paperball-finance (PR #604, 17.09.2026) darf der Plattform-Support ein Konto
+nur noch mit Einwilligung des Nutzers öffnen. Dabei fiel auf, dass die
+Schreibsperre der Impersonation seit der Cookie-Umstellung **nie** gegriffen
+hatte: Sie las das Token nur aus dem `Authorization`-Header, die
+Auth-Dependency auch aus dem Cookie. Der Flottenabgleich danach: survey und
+support haben gar keine Sperre, paperball-news hat eine und registriert sie
+nicht, aufträge sperrt den eigenen Stop-Endpunkt — und keine App außer finance
+fragt den Nutzer.
+
+**Die Regel des Moduls `support_zugriff`:** ohne laufende Freigabe keine
+Impersonation; Anfrage und Selbst-Erteilung sind eine Zeile; höchstens eine
+offene Anfrage oder laufende Freigabe; die Sitzung endet spätestens mit der
+Freigabe; Widerruf wirkt sofort; im Zweifel zu. Speicher und Router bleiben in
+der App, die Entscheidung kommt von hier:
+
+```python
+from apps121_core.support_zugriff import darf_impersonieren, laeuft, sitzungsende
+
+freigabe_laeuft = zeile is not None and laeuft(
+    status=zeile.status, gueltig_bis=zeile.valid_until, jetzt=jetzt
+)
+if (fehler := darf_impersonieren(freigabe_laeuft=freigabe_laeuft)) is not None:
+    audit("impersonate.denied", reason=fehler.value)
+    raise HTTPException(403, detail=user_error(f"errors.support_access.{fehler.value}", admin))
+ablauf = sitzungsende(gueltig_bis=zeile.valid_until, gewuenscht=jetzt + IMPERSONATION_TTL)
+```
+
+**Die Regel des Moduls `zugangs_token`:** Wer ein Token ansieht, fragt
+`token_der_anfrage(request.headers.get("authorization"), request.cookies.get(ACCESS_COOKIE))`
+— die Dependency genauso wie jede Middleware. Header vor Cookie; ein Header,
+der kein Bearer ist, verdeckt das Cookie nicht.
+
+**Warum kein geteilter Guard-Test als Datei:** Die fünf Sperren unterscheiden
+sich in Token-Claims (`imp`, `impersonator`, `imp_session_uuid`),
+Cookie-Namen, Präfixen und Blocktiefe; ein Test, der das alles über
+Platzhalter abfragt, wäre in jeder App halb ausgefüllt und damit still grün.
+Geteilt ist stattdessen die Funktion, die den Fehler unmöglich macht, plus die
+Pflicht aus FLEET_ADMIN_SPEC §2.2 Punkt 6: vier Fälle gegen die **ganze** App.
