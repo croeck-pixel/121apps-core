@@ -260,3 +260,46 @@ def test_ersttarif_laesst_zukaeufe_draussen():
     liegt UNTER dem Deckel und wäre voll provisioniert."""
     assert not g.zaehlt_fuer_beteiligung(ERST, billing_reason="manual")
     assert g.zaehlt_fuer_beteiligung(ERST, billing_reason="subscription_cycle")
+
+
+# ── Kopfprämie (CPO) ───────────────────────────────────────────────────────
+def test_kopfpraemie_genau_einmal():
+    """Ein Abo hat keine Bestellung, sondern eine Folge von Rechnungen."""
+    assert g.kopfpraemie(5000, ist_erste_zahlung=True) == 5000
+    assert g.kopfpraemie(5000, ist_erste_zahlung=False) == 0
+
+
+def test_ohne_cpo_keine_praemie():
+    assert g.kopfpraemie(None, ist_erste_zahlung=True) == 0
+
+
+def test_praemie_von_null_ist_ein_fehler():
+    """Wer keine Prämie geben will, lässt das Feld leer — eine gesetzte Null
+    ist eine Zusage, die keine ist."""
+    with pytest.raises(ValueError):
+        g.kopfpraemie(0, ist_erste_zahlung=True)
+
+
+def test_praemie_und_beteiligung_schliessen_sich_nicht_aus():
+    """Beide Felder sind unabhängig: Kopfprämie UND laufende Beteiligung."""
+    praemie = g.kopfpraemie(5000, ist_erste_zahlung=True)
+    laufend = g.provision(
+        g.bemessungsgrundlage(3900, basis=GESAMT), Decimal("15")
+    )
+    assert (praemie, laufend) == (5000, 585)
+
+
+def test_die_drei_ledger_arten_sind_verschieden():
+    assert len({g.BETEILIGUNG, g.KOPFPRAEMIE, g.GEGENBUCHUNG}) == 3
+
+
+def test_amortisation_wird_aufgerundet():
+    """50 € Prämie bei 39 €/Monat sind zwei Monate — ein halber zahlt nichts ein."""
+    assert g.monate_bis_amortisiert(5000, 3900) == 2
+    assert g.monate_bis_amortisiert(3900, 3900) == 1
+    assert g.monate_bis_amortisiert(50000, 3900) == 13
+
+
+def test_amortisation_ohne_umsatz_ist_ein_fehler():
+    with pytest.raises(ValueError):
+        g.monate_bis_amortisiert(5000, 0)

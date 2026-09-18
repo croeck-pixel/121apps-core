@@ -32,12 +32,15 @@ __all__ = [
     "ABGELAUFEN",
     "ABO_RECHNUNGSGRUENDE",
     "AUSGESCHOEPFT",
+    "BETEILIGUNG",
     "BEREITS_GEBUNDEN",
     "FALSCHER_PLAN",
     "FALSCHES_INTERVALL",
     "FALSCHE_WAEHRUNG",
     "INAKTIV",
+    "GEGENBUCHUNG",
     "JAEHRLICHE_INTERVALLE",
+    "KOPFPRAEMIE",
     "NUR_NEUKUNDEN",
     "UNBEKANNT",
     "Beteiligungsbasis",
@@ -52,6 +55,8 @@ __all__ = [
     "ist_abo_rechnung",
     "ist_auszahlbar",
     "ist_jaehrlich",
+    "kopfpraemie",
+    "monate_bis_amortisiert",
     "provision",
     "pruefen",
     "rechnungen_aus_monaten",
@@ -383,6 +388,57 @@ def bemessungsgrundlage(
     if deckel_minor < 0:
         raise ValueError("deckel_minor darf nicht negativ sein")
     return min(netto_minor, deckel_minor)
+
+
+#: Die drei Arten von Posten im Ledger. Getrennt, weil sie verschiedene
+#: Felder tragen: eine Beteiligung hat Grundlage und Satz, eine Kopfprämie
+#: hat einen Betrag und sonst nichts.
+BETEILIGUNG = "earning"
+KOPFPRAEMIE = "bounty"
+GEGENBUCHUNG = "clawback"
+
+
+def kopfpraemie(cpo_eur_minor: int | None, *, ist_erste_zahlung: bool) -> int:
+    """Wie viel Kopfprämie dieser Zahlungseingang auslöst — 0, wenn keine.
+
+    **Genau einmal je Kunde**, beim ersten Zahlungseingang: ein Abo hat keine
+    „Bestellung", sondern eine Folge von Rechnungen. Wer die Prämie an jede
+    Rechnung hängt, zahlt sie bei monatlicher Zahlung zwölfmal im Jahr — das
+    ist eine zweite Beteiligung mit festem Betrag und praktisch nie gemeint.
+
+    Der Schutz gegen sofortige Rückbuchung ist die bestehende Karenz
+    (:func:`reifezeitpunkt`): die Prämie entsteht sofort, wird aber erst nach
+    45 Tagen auszahlbar. Wer in dieser Zeit erstattet oder zurückbucht, löst
+    eine Gegenbuchung aus — **in voller Höhe**, denn eine Kopfprämie ist nicht
+    teilbar.
+
+    Kopfprämie und Beteiligung schliessen sich nicht aus: beide Felder sind
+    unabhängig, und „nur Prämie", „nur Beteiligung", „beides" sind einfach die
+    drei Kombinationen.
+    """
+    if cpo_eur_minor is None:
+        return 0
+    if cpo_eur_minor <= 0:
+        raise ValueError(
+            "Eine Kopfprämie von null ist keine Zusage — wer keine geben will, "
+            "lässt das Feld leer"
+        )
+    return cpo_eur_minor if ist_erste_zahlung else 0
+
+
+def monate_bis_amortisiert(cpo_eur_minor: int, monatlicher_netto_minor: int) -> int:
+    """Nach wie vielen Monaten der Kunde die Kopfprämie eingespielt hat.
+
+    Die Zahl, die eine Fehlkonfiguration sichtbar macht, bevor sie teuer wird:
+    eine Prämie über dem Jahreswert eines Kunden ist ein Verlustgeschäft, und
+    in zwei Feldern nebeneinander sieht man das nicht. Gehört deshalb in die
+    Vorschau, nicht in die erste Abrechnung.
+
+    Aufgerundet — ein halber Monat zahlt nichts ein.
+    """
+    if monatlicher_netto_minor <= 0:
+        raise ValueError("Ohne monatlichen Umsatz amortisiert sich nichts")
+    return -(-cpo_eur_minor // monatlicher_netto_minor)
 
 
 def provision(basis_minor: int, satz: Decimal) -> int:
