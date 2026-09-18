@@ -151,3 +151,155 @@ def test_karenz_null_ist_ein_fehler():
     """Ohne Karenz wird Provision auf rückbuchbare Umsätze ausgezahlt."""
     with pytest.raises(ValueError):
         g.reifezeitpunkt(JETZT, 0)
+
+
+# ── Rabattdauer: gespeichert wird der MONAT ────────────────────────────────
+def test_jaehrliche_schreibweisen():
+    for wort in ("year", "yearly", "annual", "Jahr", "JAEHRLICH"):
+        assert g.ist_jaehrlich(wort), wort
+    for wort in ("month", "monthly", "monat"):
+        assert not g.ist_jaehrlich(wort)
+
+
+def test_monate_in_rechnungen():
+    assert g.rechnungen_aus_monaten("monthly", 12) == 12
+    assert g.rechnungen_aus_monaten("yearly", 12) == 1
+    assert g.rechnungen_aus_monaten("yearly", 24) == 2
+
+
+def test_angebrochenes_jahr_wird_aufgerundet():
+    """Es gibt keine halbe Rechnung — 6 Monate treffen die erste Jahresrechnung."""
+    assert g.rechnungen_aus_monaten("yearly", 6) == 1
+    assert g.rechnungen_aus_monaten("yearly", 13) == 2
+
+
+def test_was_der_kunde_wirklich_bekommt():
+    """Der Satz, den die Oberfläche VOR dem Speichern zeigen muss."""
+    assert g.gewaehrte_monate("monthly", 6) == 6
+    assert g.gewaehrte_monate("yearly", 6) == 12
+    assert g.gewaehrte_monate("yearly", 24) == 24
+
+
+def test_null_monate_sind_kein_dauerrabatt():
+    """Die Falle, die einen zugesagten Rabatt still verschwinden liess: ein
+    leeres Feld ist keine unbegrenzte Zusage, sondern eine fehlende."""
+    with pytest.raises(ValueError):
+        g.rechnungen_aus_monaten("monthly", 0)
+
+
+def test_coupon_aus_monaten():
+    assert g.coupon_aus_monaten("monthly", 1) == (g.Rabattdauer.EINMAL, None)
+    assert g.coupon_aus_monaten("monthly", 12) == (g.Rabattdauer.WIEDERHOLT, 12)
+    # Ein Jahr jährlich ist GENAU eine Rechnung — `repeating` mit 12 Monaten
+    # liesse die zweite auf den Ablauf des Fensters fallen (§4.2).
+    assert g.coupon_aus_monaten("yearly", 12) == (g.Rabattdauer.EINMAL, None)
+    assert g.coupon_aus_monaten("yearly", 24) == (g.Rabattdauer.WIEDERHOLT, 24)
+
+
+# ── Bemessungsgrundlage ────────────────────────────────────────────────────
+GESAMT = g.Beteiligungsbasis.GESAMTUMSATZ
+ERST = g.Beteiligungsbasis.ERSTTARIF
+
+
+def test_gesamtumsatz_nimmt_die_rechnung_wie_sie_ist():
+    assert g.bemessungsgrundlage(9900, basis=GESAMT) == 9900
+
+
+def test_ersttarif_deckelt_das_upgrade():
+    """Kunde startet auf Einzel (39 €) und wechselt auf Team (99 €) — der
+    Partner verdient weiter an dem, was er gebracht hat."""
+    assert g.bemessungsgrundlage(9900, basis=ERST, deckel_minor=3900) == 3900
+
+
+def test_ersttarif_deckelt_ein_downgrade_nicht():
+    assert g.bemessungsgrundlage(3900, basis=ERST, deckel_minor=9900) == 3900
+
+
+def test_deckel_ist_der_listenpreis_nicht_die_erste_rechnung():
+    """Die erste Rechnung ist rabattiert (31,20 statt 39 €). Gerechnet wird auf
+    das tatsächlich Gezahlte — der Deckel greift erst darüber."""
+    assert g.bemessungsgrundlage(3120, basis=ERST, deckel_minor=3900) == 3120
+
+
+def test_jahresrechnung_gegen_jahresdeckel():
+    """Der Deckel kommt je Rechnung aus dem Katalog, im Intervall DIESER
+    Rechnung. Ein fester Monatsbetrag würde hier 90 % wegnehmen."""
+    assert g.bemessungsgrundlage(39000, basis=ERST, deckel_minor=39000) == 39000
+
+
+def test_ersttarif_ohne_deckel_wird_nicht_gebucht():
+    """Ungedeckelt zu buchen wäre stillschweigend eine andere Zusage."""
+    with pytest.raises(ValueError):
+        g.bemessungsgrundlage(9900, basis=ERST)
+
+
+def test_negativer_umsatz_ist_keine_grundlage():
+    with pytest.raises(ValueError):
+        g.bemessungsgrundlage(-100, basis=GESAMT)
+
+
+# ── Welche Rechnung überhaupt zählt ────────────────────────────────────────
+def test_abo_rechnung_erkannt():
+    assert g.ist_abo_rechnung("subscription_cycle")
+    assert g.ist_abo_rechnung("subscription_create")
+    assert not g.ist_abo_rechnung("manual")
+    assert not g.ist_abo_rechnung("quote_accept")
+
+
+def test_unbekannter_grund_zaehlt_mit():
+    """Zu wenig Provision fällt niemandem auf — zu viel schon."""
+    assert g.ist_abo_rechnung(None)
+
+
+def test_gesamtumsatz_zaehlt_auch_zukaeufe():
+    assert g.zaehlt_fuer_beteiligung(GESAMT, billing_reason="manual")
+
+
+def test_ersttarif_laesst_zukaeufe_draussen():
+    """Der Deckel allein würde hier versagen: ein Guthabenpaket für 200 €
+    liegt UNTER dem Deckel und wäre voll provisioniert."""
+    assert not g.zaehlt_fuer_beteiligung(ERST, billing_reason="manual")
+    assert g.zaehlt_fuer_beteiligung(ERST, billing_reason="subscription_cycle")
+
+
+# ── Kopfprämie (CPO) ───────────────────────────────────────────────────────
+def test_kopfpraemie_genau_einmal():
+    """Ein Abo hat keine Bestellung, sondern eine Folge von Rechnungen."""
+    assert g.kopfpraemie(5000, ist_erste_zahlung=True) == 5000
+    assert g.kopfpraemie(5000, ist_erste_zahlung=False) == 0
+
+
+def test_ohne_cpo_keine_praemie():
+    assert g.kopfpraemie(None, ist_erste_zahlung=True) == 0
+
+
+def test_praemie_von_null_ist_ein_fehler():
+    """Wer keine Prämie geben will, lässt das Feld leer — eine gesetzte Null
+    ist eine Zusage, die keine ist."""
+    with pytest.raises(ValueError):
+        g.kopfpraemie(0, ist_erste_zahlung=True)
+
+
+def test_praemie_und_beteiligung_schliessen_sich_nicht_aus():
+    """Beide Felder sind unabhängig: Kopfprämie UND laufende Beteiligung."""
+    praemie = g.kopfpraemie(5000, ist_erste_zahlung=True)
+    laufend = g.provision(
+        g.bemessungsgrundlage(3900, basis=GESAMT), Decimal("15")
+    )
+    assert (praemie, laufend) == (5000, 585)
+
+
+def test_die_drei_ledger_arten_sind_verschieden():
+    assert len({g.BETEILIGUNG, g.KOPFPRAEMIE, g.GEGENBUCHUNG}) == 3
+
+
+def test_amortisation_wird_aufgerundet():
+    """50 € Prämie bei 39 €/Monat sind zwei Monate — ein halber zahlt nichts ein."""
+    assert g.monate_bis_amortisiert(5000, 3900) == 2
+    assert g.monate_bis_amortisiert(3900, 3900) == 1
+    assert g.monate_bis_amortisiert(50000, 3900) == 13
+
+
+def test_amortisation_ohne_umsatz_ist_ein_fehler():
+    with pytest.raises(ValueError):
+        g.monate_bis_amortisiert(5000, 0)
