@@ -34,6 +34,7 @@ from vertragsende import (  # noqa: E402
     erstattung_cent,
     ist_honigtopf,
     loeschbar_ab,
+    periodenende_ab,
     normalisiere_email,
     ordne_zu,
     pruefe_erklaerung,
@@ -55,6 +56,7 @@ def vertrag(**kw):
         rechnungsnummern=frozenset({"INV-1"}),
         abgeschlossen_am=datetime(2026, 9, 20, 12, 0, tzinfo=UTC),
         laufzeitende=datetime(2026, 10, 20, 12, 0, tzinfo=UTC),
+        intervall_monate=1,
         belehrt_am=datetime(2026, 9, 20, 12, 0, tzinfo=UTC),
     )
     werte.update(kw)
@@ -177,6 +179,8 @@ def test_vertrag_ohne_zeitzone_oder_mit_umfang_alle_fliegt_auf():
         vertrag(laufzeitende=datetime(2026, 10, 20))
     with pytest.raises(ValueError):
         vertrag(umfang=Umfang.ALL)
+    with pytest.raises(ValueError):
+        vertrag(intervall_monate=0)
 
 
 # --- Kündigung -------------------------------------------------------------
@@ -199,12 +203,37 @@ def test_ordentlich_endet_zum_periodenende_ohne_handgriff():
     assert s.zum == v.laufzeitende
 
 
-def test_wunschtag_nach_periodenende_wird_uebernommen():
-    e = _eine(vertrag(), zeitpunkt=Zeitpunkt.DATE, wunschdatum=date(2026, 12, 31))
+def test_wunschtag_endet_zum_ende_seines_zeitraums_nie_mittendrin():
+    """Entscheidung 3: der Kunde hat den Zeitraum bezahlt, in den sein Wunschtag
+    fällt — der Vertrag endet an dessen Ende, und die Mail sagt es."""
+    e = _eine(vertrag(), zeitpunkt=Zeitpunkt.DATE, wunschdatum=date(2026, 12, 15))
     (s,) = e.schritte
-    assert s.zum == ende_des_tages(date(2026, 12, 31))
-    assert s.zum == datetime(2027, 1, 1, 0, 0, tzinfo=BERLIN)
+    assert s.zum == datetime(2026, 12, 20, 12, 0, tzinfo=UTC)
+    assert e.hinweise == (Hinweis.ENDS_AT_PERIOD_END,)
+
+
+def test_wunschtag_genau_auf_der_grenze_ohne_hinweis():
+    # Grenze 20.12. 12:00 UTC = 13:00 Berlin; ende_des_tages(19.12.) = 20.12. 00:00 Berlin
+    e = _eine(vertrag(), zeitpunkt=Zeitpunkt.DATE, wunschdatum=date(2026, 12, 19))
+    (s,) = e.schritte
+    assert s.zum == datetime(2026, 12, 20, 12, 0, tzinfo=UTC)
+    assert e.hinweise == (Hinweis.ENDS_AT_PERIOD_END,)
+    # Grenzen gehen in UTC weiter (wie bei Stripe) — deshalb ein Paar ohne
+    # Zeitumstellung dazwischen: 20.11. und 20.12. je 00:00 Berlin (MEZ).
+    v = vertrag(laufzeitende=datetime(2026, 11, 19, 23, 0, tzinfo=UTC))
+    e = _eine(v, zeitpunkt=Zeitpunkt.DATE, wunschdatum=date(2026, 12, 19))
+    (s,) = e.schritte
+    assert s.zum == ende_des_tages(date(2026, 12, 19))
     assert e.hinweise == ()
+
+
+def test_periodengrenzen_jaehrlich_und_am_monatsende():
+    jahr = vertrag(intervall_monate=12, laufzeitende=datetime(2027, 3, 1, tzinfo=UTC))
+    assert periodenende_ab(jahr, datetime(2027, 6, 1, tzinfo=UTC)) == datetime(2028, 3, 1, tzinfo=UTC)
+    ultimo = vertrag(laufzeitende=datetime(2027, 1, 31, 9, 0, tzinfo=UTC))
+    assert periodenende_ab(ultimo, datetime(2027, 2, 10, tzinfo=UTC)) == datetime(2027, 2, 28, 9, 0, tzinfo=UTC)
+    # vom ANKER gezählt, nicht vom Vormonat: nach Februar wieder der 31.
+    assert periodenende_ab(ultimo, datetime(2027, 3, 1, tzinfo=UTC)) == datetime(2027, 3, 31, 9, 0, tzinfo=UTC)
 
 
 def test_wunschtag_vor_periodenende_heisst_fruehestmoeglich_und_wird_gesagt():

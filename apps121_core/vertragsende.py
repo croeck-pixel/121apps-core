@@ -25,10 +25,13 @@ Die Entscheidungen, die mehr zählen als der Code
    allein.** Eine Rechnungsnummer lässt sich raten oder steht auf einem
    weitergeleiteten Beleg. Passt nur sie, wird nichts automatisch beendet —
    die Erklärung geht an den Support (:attr:`Pruefgrund.INVOICE_ONLY`).
-3. **Eine ordentliche Kündigung endet ohne Handgriff.** Frühestens zum Ende
-   des laufenden Abrechnungszeitraums, sonst zum gewünschten Tag. Eine
-   außerordentliche endet genauso automatisch; nur die Frage nach einem
-   FRÜHEREN Ende und einer Erstattung geht an einen Menschen.
+3. **Eine ordentliche Kündigung endet ohne Handgriff** — immer an einer
+   Periodengrenze: frühestens zum Ende des laufenden Abrechnungszeitraums,
+   bei einem späteren Wunschtag zum Ende des Zeitraums, in den er fällt
+   (:attr:`Hinweis.ENDS_AT_PERIOD_END`). Mitten in einem bezahlten Zeitraum
+   zu enden, nähme dem Kunden, wofür er bezahlt hat. Eine außerordentliche
+   endet genauso automatisch; nur die Frage nach einem FRÜHEREN Ende und
+   einer Erstattung geht an einen Menschen.
 4. **Ein Widerruf in der Frist beendet sofort und erstattet** — ganz, solange
    der Kunde nicht ausdrücklich verlangt hat, dass die Leistung vor Ablauf der
    Frist beginnt (§357a Abs. 2); dann anteilig. Ein Widerruf NACH der Frist
@@ -83,6 +86,7 @@ __all__ = [
     "erstattung_cent",
     "ist_honigtopf",
     "loeschbar_ab",
+    "periodenende_ab",
     "normalisiere_email",
     "ordne_zu",
     "pruefe_erklaerung",
@@ -173,6 +177,7 @@ class Hinweis(str, Enum):
 
     WITHDRAWAL_LATE = "withdrawal_late"  # Frist vorbei → als Kündigung umgesetzt
     DATE_BEFORE_EARLIEST = "date_before_earliest"  # Wunschtag zu früh → frühestmöglich
+    ENDS_AT_PERIOD_END = "ends_at_period_end"  # Wunschtag mitten im Zeitraum → dessen Ende
 
 
 class Fehler(str, Enum):
@@ -285,6 +290,8 @@ class Vertrag:
     rechnungsnummern: frozenset[str]
     abgeschlossen_am: datetime
     laufzeitende: datetime  # Ende des laufenden Abrechnungszeitraums
+    #: Länge eines Abrechnungszeitraums in Monaten (1 = monatlich, 12 = jährlich).
+    intervall_monate: int
     endet_am: datetime | None = None  # bereits geplantes Ende
     belehrt_am: datetime | None = None  # Widerrufsbelehrung erteilt
     #: Hat der Kunde ausdrücklich verlangt, dass die Leistung vor Ablauf der
@@ -295,6 +302,8 @@ class Vertrag:
     def __post_init__(self) -> None:
         if self.umfang is Umfang.ALL:
             raise ValueError("Ein Vertrag ist persönlich oder ein Account, nie beides.")
+        if self.intervall_monate < 1:
+            raise ValueError("intervall_monate muss mindestens 1 sein.")
         for feld in ("abgeschlossen_am", "laufzeitende", "endet_am", "belehrt_am"):
             wert = getattr(self, feld)
             if wert is not None and wert.tzinfo is None:
@@ -443,6 +452,23 @@ def erstattung_cent(
     return gezahlt_cent - wertersatz
 
 
+def periodenende_ab(vertrag: Vertrag, fruehestens: datetime) -> datetime:
+    """Die erste Periodengrenze des Vertrags an oder nach ``fruehestens``.
+
+    Gezählt wird vom laufenden Periodenende in ganzen Zeiträumen, Uhrzeit wie
+    dort. Ein Anker am 31. landet in kürzeren Monaten auf dem letzten Tag
+    (so rechnet auch Stripe).
+    """
+    ende = vertrag.laufzeitende
+    n = 0
+    while ende < fruehestens:
+        n += 1
+        anker = vertrag.laufzeitende
+        tag = _plus_monate(anker.date(), n * vertrag.intervall_monate)
+        ende = anker.replace(year=tag.year, month=tag.month, day=tag.day)
+    return ende
+
+
 # --- Entscheidung ----------------------------------------------------------
 
 
@@ -501,7 +527,9 @@ def entscheide(
                 if gewuenscht < v.laufzeitende:
                     hinweise.add(Hinweis.DATE_BEFORE_EARLIEST)
                 else:
-                    ziel = gewuenscht
+                    ziel = periodenende_ab(v, gewuenscht)
+                    if ziel != gewuenscht:
+                        hinweise.add(Hinweis.ENDS_AT_PERIOD_END)
         if v.endet_am is not None and v.endet_am <= ziel:
             schritte.append(Schritt(v.id, Massnahme.ALREADY_ENDING, v.endet_am))
         else:
