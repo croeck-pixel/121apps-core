@@ -46,6 +46,7 @@ def test_alle_auth_buckets_sind_belegt():
         "email_bestaetigen",
         "magic_login",
         "sso_start",
+        "vertragserklaerung",
     }
 
 
@@ -65,10 +66,15 @@ def test_sso_einstieg_ist_lockerer_als_anmelden_aber_begrenzt():
 
 
 def test_mailversand_an_fremde_ist_am_striktesten():
-    """Passwort-vergessen und Bestätigung-erneut verschicken Post an eine
+    """Passwort-vergessen, Bestätigung-erneut und die Vertragserklärung
+    (Kündigen/Widerrufen) verschicken Post an eine
     Adresse, die der Aufrufer nur behauptet. Sie müssen strenger sein als
     alles, was nur den eigenen Zugang betrifft."""
-    fremdpost = [LIMITS["passwort_vergessen"], LIMITS["bestaetigung_erneut"]]
+    fremdpost = [
+        LIMITS["passwort_vergessen"],
+        LIMITS["bestaetigung_erneut"],
+        LIMITS["vertragserklaerung"],
+    ]
     for regel in fremdpost:
         assert regel.limit <= 3
         assert regel.fenster_sekunden >= 3600

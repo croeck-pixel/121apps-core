@@ -123,6 +123,13 @@ LIMITS: dict[str, Regel] = {
     # die Organisation aus der DB. Locker gehalten, weil ein Mensch beim Anmelden
     # durchaus mehrfach hin- und herspringt (Konto wechseln, Zurück-Taste).
     "sso_start": Regel(limit=20, fenster_sekunden=60),
+    # Kündigen und Widerrufen ohne Anmeldung (§312k/§356a BGB, siehe
+    # ``vertragsende.py``): verschickt die Bestätigung an eine Adresse, die der
+    # Aufrufer nur behauptet — dieselbe Lage wie „Passwort vergessen". Drei je
+    # Stunde reichen für den echten Fall (kündigen, vertippt, nochmal; oder
+    # widerrufen UND kündigen). Ein Captcha gibt es bewusst nicht: §312k
+    # verlangt eine Schaltfläche, die „unmittelbar und leicht zugänglich" ist.
+    "vertragserklaerung": Regel(limit=3, fenster_sekunden=3600),
 }
 
 

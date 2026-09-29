@@ -22,6 +22,7 @@
 | [`rate_limit.py`](rate_limit.py) | Wie oft dieselbe Herkunft einen Auth-Endpunkt aufrufen darf | 04.09.2026 |
 | [`support_zugriff.py`](support_zugriff.py) | Wann der Plattform-Support ein Konto öffnen darf: Einwilligung, Anfrage, Frist, Widerruf, Sitzungsende ([Spec](../../docs/FLEET_SUPPORT_ZUGRIFF_SPEC.md)) | 17.09.2026 |
 | [`zugangs_token.py`](zugangs_token.py) | Woher das Access-Token einer Anfrage kommt — eine Antwort für Auth-Dependency UND Write-Guard ([FLEET_ADMIN_SPEC §2.2](../../docs/FLEET_ADMIN_SPEC.md#22-write-guard-pflicht--keine-impersonation-ohne)) | 17.09.2026 |
+| [`vertragsende.py`](vertragsende.py) | Kündigen (§312k) und Widerrufen (§356a) ohne Anmeldung: Vollständigkeit, Zuordnung ohne Kundenliste, Vertragsende, Widerrufsfrist (§187/§193, Höchstfrist), Erstattung, Rücknahme, Aufbewahrung ([Spec](../../docs/FLEET_VERTRAGSENDE_SPEC.md)) | 29.09.2026 |
 
 ## `refresh_rotation` — warum es das gibt
 
