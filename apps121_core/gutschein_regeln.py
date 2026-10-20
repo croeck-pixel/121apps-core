@@ -34,6 +34,7 @@ __all__ = [
     "AUSGESCHOEPFT",
     "BETEILIGUNG",
     "BEREITS_GEBUNDEN",
+    "DAUERHAFT_OHNE_GRENZE",
     "FALSCHER_PLAN",
     "FALSCHES_INTERVALL",
     "FALSCHE_WAEHRUNG",
@@ -41,16 +42,23 @@ __all__ = [
     "GEGENBUCHUNG",
     "JAEHRLICHE_INTERVALLE",
     "KOPFPRAEMIE",
+    "LAUFZEIT_FEHLT",
+    "LAUFZEIT_OHNE_RABATT",
+    "MONATE_BEI_DAUERHAFT",
+    "MONATE_FEHLEN",
     "NUR_NEUKUNDEN",
+    "RABATT_UNGUELTIG",
     "UNBEKANNT",
     "Beteiligungsbasis",
     "Codestand",
     "Pruefung",
     "Rabattdauer",
+    "Rabattlaufzeit",
     "bemessungsgrundlage",
     "beteiligung_ende",
     "coupon_aus_monaten",
     "coupon_dauer",
+    "coupon_fuer",
     "gewaehrte_monate",
     "ist_abo_rechnung",
     "ist_auszahlbar",
@@ -58,6 +66,7 @@ __all__ = [
     "kopfpraemie",
     "monate_bis_amortisiert",
     "provision",
+    "pruefe_rabatt",
     "pruefen",
     "rechnungen_aus_monaten",
     "reifezeitpunkt",
@@ -80,6 +89,15 @@ FALSCHE_WAEHRUNG = "code_not_for_currency"
 AUSGESCHOEPFT = "code_exhausted"
 NUR_NEUKUNDEN = "code_new_customers_only"
 BEREITS_GEBUNDEN = "workspace_already_bound"
+
+# Gründe, aus denen die Verwaltung einen Code nicht SPEICHERN darf (§2.2) — die
+# App übersetzt sie zu `codes.error.<grund>` wie die Einlösegründe oben.
+RABATT_UNGUELTIG = "discount_percent_invalid"
+LAUFZEIT_FEHLT = "discount_duration_missing"
+LAUFZEIT_OHNE_RABATT = "discount_duration_without_percent"
+MONATE_FEHLEN = "discount_months_missing"
+MONATE_BEI_DAUERHAFT = "discount_months_with_forever"
+DAUERHAFT_OHNE_GRENZE = "discount_forever_without_limit"
 
 
 @dataclass(frozen=True)
@@ -251,10 +269,83 @@ def coupon_dauer(interval: str, perioden: int) -> tuple[Rabattdauer, int | None]
 def coupon_aus_monaten(interval: str, monate: int) -> tuple[Rabattdauer, int | None]:
     """Die gespeicherte Zusage („N Monate Rabatt") als Stripe-Coupon-Dauer.
 
-    Der Weg aus dem Feld in den Coupon — und der einzige, den eine App gehen
-    sollte.
+    Für einen Code mit ``discount_duration`` ruft die App :func:`coupon_fuer` —
+    das ist der Weg für beide Laufzeiten.
     """
     return coupon_dauer(interval, rechnungen_aus_monaten(interval, monate))
+
+
+class Rabattlaufzeit(str, enum.Enum):
+    """Wie lange ein Rabatt läuft — gespeichert als ``discount_duration``.
+
+    **„Dauerhaft" ist eine Wahl, nie ein leeres Feld** (§2.2, ergänzt
+    20.10.2026). Bis dahin verbot die Spec einen dauerhaften Rabatt ganz, weil
+    in paperball-finance ein leeres ``discount_months`` „unbegrenzt" meinte, die
+    Umrechnung daran scheiterte und der Kunde still den vollen Preis zahlte.
+    Die Lehre daraus ist „leer heisst nie unbegrenzt", nicht „unbegrenzt gibt
+    es nicht": dauerhaft rabattierte Zugänge sind ein normales Angebot.
+    """
+
+    MONATE = "months"
+    DAUERHAFT = "forever"
+
+
+def pruefe_rabatt(
+    *,
+    discount_percent: int | None,
+    discount_duration: str | None,
+    discount_months: int | None,
+    max_redemptions: int | None,
+    redeemable_until: date | None,
+) -> Pruefung:
+    """Darf die Verwaltung diesen Rabatt so speichern? (§2.2)
+
+    - Ohne Rabattsatz keine Laufzeit — sonst stünde eine Zusage im Formular,
+      die nie eintritt.
+    - Mit Rabattsatz ist die Laufzeit Pflicht: ``months`` mit mindestens einem
+      Monat, oder ``forever`` ohne Monate.
+    - **Dauerhaft braucht eine Grenze** — ``max_redemptions`` oder
+      ``redeemable_until``. Ein dauerhafter Rabatt ist Vertragsbestandteil und
+      lässt sich bei bestehenden Kunden nicht einseitig zurücknehmen; ein
+      öffentlicher Code ohne Grenze verschenkt Umsatz an jeden, der ihn findet.
+      Ein Einmal-Code (Einladung) erfüllt das mit ``max_redemptions = 1``.
+    """
+    if discount_percent is None:
+        if discount_duration is not None or discount_months is not None:
+            return Pruefung(False, LAUFZEIT_OHNE_RABATT)
+        return Pruefung(True)
+    if not 1 <= discount_percent <= 100:
+        return Pruefung(False, RABATT_UNGUELTIG)
+    if discount_duration is None:
+        return Pruefung(False, LAUFZEIT_FEHLT)
+    laufzeit = Rabattlaufzeit(discount_duration)
+    if laufzeit is Rabattlaufzeit.MONATE:
+        if discount_months is None or discount_months < 1:
+            return Pruefung(False, MONATE_FEHLEN)
+        return Pruefung(True)
+    if discount_months is not None:
+        return Pruefung(False, MONATE_BEI_DAUERHAFT)
+    if max_redemptions is None and redeemable_until is None:
+        return Pruefung(False, DAUERHAFT_OHNE_GRENZE)
+    return Pruefung(True)
+
+
+def coupon_fuer(
+    interval: str, discount_duration: str, discount_months: int | None
+) -> tuple[Rabattdauer, int | None]:
+    """Die gespeicherte Zusage als Stripe-Coupon-Dauer — für beide Laufzeiten.
+
+    ``forever`` bleibt bei jedem Intervall ``forever``: ein dauerhafter Rabatt
+    überlebt auch den Wechsel von monatlich auf jährlich (§4.5 betrifft nur
+    befristete Rabatte).
+    """
+    if Rabattlaufzeit(discount_duration) is Rabattlaufzeit.DAUERHAFT:
+        if discount_months is not None:
+            raise ValueError("Ein dauerhafter Rabatt trägt keine Monate")
+        return (Rabattdauer.DAUERHAFT, None)
+    if discount_months is None:
+        raise ValueError("Ein befristeter Rabatt braucht Monate — leer heisst nie unbegrenzt")
+    return coupon_aus_monaten(interval, discount_months)
 
 
 # ---------------------------------------------------------------------------

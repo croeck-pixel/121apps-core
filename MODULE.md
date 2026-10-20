@@ -23,6 +23,8 @@
 | [`support_zugriff.py`](support_zugriff.py) | Wann der Plattform-Support ein Konto öffnen darf: Einwilligung, Anfrage, Frist, Widerruf, Sitzungsende ([Spec](../../docs/FLEET_SUPPORT_ZUGRIFF_SPEC.md)) | 17.09.2026 |
 | [`zugangs_token.py`](zugangs_token.py) | Woher das Access-Token einer Anfrage kommt — eine Antwort für Auth-Dependency UND Write-Guard ([FLEET_ADMIN_SPEC §2.2](../../docs/FLEET_ADMIN_SPEC.md#22-write-guard-pflicht--keine-impersonation-ohne)) | 17.09.2026 |
 | [`vertragsende.py`](vertragsende.py) | Kündigen (§312k) und Widerrufen (§356a) ohne Anmeldung: Vollständigkeit, Zuordnung ohne Kundenliste, Vertragsende, Widerrufsfrist (§187/§193, Höchstfrist), Erstattung, Rücknahme, Aufbewahrung ([Spec](../../docs/FLEET_VERTRAGSENDE_SPEC.md)) | 29.09.2026 |
+| [`einladung_zugang.py`](einladung_zugang.py) | Einladung der Verwaltung: Geschenk (Tarif von Hand), Rabatt 1–99 % als Einmal-Gutschein, KI-Kontingent, Ende eines Tarifs von Hand ([FLEET_ADMIN_SPEC §6.3](../../docs/FLEET_ADMIN_SPEC.md#63-comp-pläne-plan_source)) | 20.10.2026 |
+| [`plan_freigabe.py`](plan_freigabe.py) | Welcher Tarif freischaltet, ob ein Webhook einen Tarif von Hand anfassen darf, wann die Kasse zahlen lässt (Nachbar von `einladung_zugang`) | 20.10.2026 |
 
 ## `refresh_rotation` — warum es das gibt
 
@@ -461,6 +463,8 @@ der Geld entsteht:
 |---|---|
 | `pruefen(stand, …)` | ob der Code hier und jetzt gilt — mit Maschinencode als Grund (Regel #23) |
 | `coupon_dauer(interval, perioden)` | welche Stripe-Coupon-Dauer daraus wird |
+| `pruefe_rabatt(…)` | ob die Verwaltung einen Rabatt so speichern darf — Laufzeit `months`/`forever` (`Rabattlaufzeit`), dauerhaft nur mit Einlösegrenze (Spec §4.11) |
+| `coupon_fuer(interval, duration, months)` | die gespeicherte Zusage als Stripe-Coupon-Dauer, für beide Laufzeiten |
 | `beteiligung_ende(erstkauf, …)` | wann die Beteiligung an diesem Kunden endet |
 | `provision(basis, satz)` | wie viel — **kaufmännisch** gerundet |
 | `reifezeitpunkt` / `ist_auszahlbar` | ab wann auszahlbar |
