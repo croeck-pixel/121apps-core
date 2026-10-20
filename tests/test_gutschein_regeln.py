@@ -303,3 +303,87 @@ def test_amortisation_wird_aufgerundet():
 def test_amortisation_ohne_umsatz_ist_ein_fehler():
     with pytest.raises(ValueError):
         g.monate_bis_amortisiert(5000, 0)
+
+
+# ── Dauerhafter Rabatt: eine Wahl, nie ein leeres Feld (§2.2, 20.10.2026) ──
+def _rabatt(**kw) -> g.Pruefung:
+    werte = {"discount_percent": 20, "discount_duration": "months", "discount_months": 12,
+             "max_redemptions": None, "redeemable_until": None}
+    werte.update(kw)
+    return g.pruefe_rabatt(**werte)
+
+
+def test_befristeter_rabatt_gilt():
+    assert _rabatt().gueltig
+
+
+def test_ohne_rabatt_ohne_laufzeit_gilt():
+    assert _rabatt(discount_percent=None, discount_duration=None, discount_months=None).gueltig
+
+
+def test_laufzeit_ohne_rabatt_abgelehnt():
+    assert _rabatt(discount_percent=None).grund == g.LAUFZEIT_OHNE_RABATT
+    assert _rabatt(discount_percent=None, discount_duration=None).grund == g.LAUFZEIT_OHNE_RABATT
+
+
+@pytest.mark.parametrize("satz", [0, 101, -5])
+def test_rabattsatz_ausserhalb_abgelehnt(satz):
+    assert _rabatt(discount_percent=satz).grund == g.RABATT_UNGUELTIG
+
+
+@pytest.mark.parametrize("satz", [1, 100])
+def test_rabattsatz_grenzen_gelten(satz):
+    assert _rabatt(discount_percent=satz).gueltig
+
+
+def test_rabatt_ohne_laufzeit_abgelehnt():
+    assert _rabatt(discount_duration=None).grund == g.LAUFZEIT_FEHLT
+
+
+def test_leere_monate_heissen_nicht_unbegrenzt():
+    """Die finance-Falle von 18.09.2026: leer war „unbegrenzt" und fiel still weg."""
+    assert _rabatt(discount_months=None).grund == g.MONATE_FEHLEN
+    assert _rabatt(discount_months=0).grund == g.MONATE_FEHLEN
+
+
+def test_dauerhaft_ohne_grenze_abgelehnt():
+    assert _rabatt(discount_duration="forever", discount_months=None).grund == g.DAUERHAFT_OHNE_GRENZE
+
+
+def test_dauerhaft_mit_kontingent_gilt():
+    assert _rabatt(discount_duration="forever", discount_months=None, max_redemptions=1).gueltig
+
+
+def test_dauerhaft_mit_einloesefenster_gilt():
+    assert _rabatt(discount_duration="forever", discount_months=None,
+                   redeemable_until=date(2026, 12, 31)).gueltig
+
+
+def test_dauerhaft_mit_monaten_abgelehnt():
+    assert _rabatt(discount_duration="forever", discount_months=12,
+                   max_redemptions=5).grund == g.MONATE_BEI_DAUERHAFT
+
+
+def test_unbekannte_laufzeit_wirft():
+    with pytest.raises(ValueError):
+        _rabatt(discount_duration="ewig")
+
+
+@pytest.mark.parametrize("intervall", ["month", "monthly", "year", "yearly", "annual"])
+def test_dauerhaft_bleibt_forever_bei_jedem_intervall(intervall):
+    assert g.coupon_fuer(intervall, "forever", None) == (g.Rabattdauer.DAUERHAFT, None)
+
+
+def test_coupon_fuer_befristet_wie_coupon_aus_monaten():
+    assert g.coupon_fuer("monthly", "months", 12) == g.coupon_aus_monaten("monthly", 12)
+    assert g.coupon_fuer("yearly", "months", 6) == g.coupon_aus_monaten("yearly", 6)
+
+
+def test_coupon_fuer_befristet_ohne_monate_wirft():
+    with pytest.raises(ValueError):
+        g.coupon_fuer("monthly", "months", None)
+
+
+def test_coupon_fuer_dauerhaft_mit_monaten_wirft():
+    with pytest.raises(ValueError):
+        g.coupon_fuer("monthly", "forever", 3)
