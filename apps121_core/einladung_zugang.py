@@ -97,6 +97,46 @@ Rabatt und KI (Entscheidungen vom 20.10.2026)
     Angaben ab (:attr:`Fehler.KI_NICHT_WAEHLBAR`), statt sie still zu
     verwerfen.
 
+Was nach dem Rabatt passiert (Entscheidungen vom 21.10.2026)
+-----------------------------------------------------------
+16. **Die Laufzeit gilt für jeden Rabatt, auch für 100 %** — in Monaten
+    (``months``) oder dauerhaft (``forever``), wie bei jedem Code. Beim
+    Geschenk rechnet :func:`zuweisung` den letzten Tag beim Annehmen aus
+    (:func:`geschenk_letzter_tag`: Annahmetag + N Monate − 1 Tag). Der letzte
+    Tag als Datum (``plan_until``) bleibt nur für Einladungen ohne Laufzeit
+    gültig (Bestand und Apps, die noch nicht umgestellt sind) — beides
+    zugleich lehnt :attr:`Fehler.ENDE_UND_LAUFZEIT` ab.
+17. **Ein befristeter Rabatt sagt, was danach kommt** (``rabatt_danach``,
+    Pflicht bei ``months``, verboten bei ``forever``):
+
+    * :data:`DANACH_STARTTARIF` — zurück in den kostenlosen Starttarif. Bei
+      100 % das Geschenk mit letztem Tag (Lauf :data:`BEAT_NAME`); bei
+      1–99 % beendet die App das Stripe-Abo genau zum Ende des Rabatts
+      (``cancel_at``, :attr:`EinladungsGutschein.endet_mit_rabatt`).
+    * :data:`DANACH_ZAHLUNG_VORAB` — läuft bezahlt im Tarif weiter, die
+      Zahlungsmethode kommt **vorab im Checkout**. Bei 1–99 % der Weg von
+      oben; bei 100 % ein Einmal-Code über 100 % für N Monate: der Checkout
+      verlangt die Karte auch bei 0 € (Stripe ``payment_method_collection``
+      Vorgabe ``always``), die Vorwarnung vor der ersten vollen Rechnung
+      (``gutschein_vorwarnung``) kündigt den Preissprung an, die Mahnung ist
+      Stripes Mahnlauf. Ohne Checkout kein Tarif — die Person bleibt im
+      Starttarif, bis sie abschließt.
+    * :data:`DANACH_ZAHLUNG_SPAETER` — nur bei 100 %: das Geschenk gilt
+      **sofort** (Tarif von Hand), die Person kann bis zum Ende eine
+      Zahlungsmethode hinterlegen (Stripe-Checkout im Modus ``setup``). Am
+      Ende entscheidet :func:`ende_entscheiden`: mit Zahlungsmethode legt die
+      App das Abo an und bucht sofort ab (``off_session``), ohne — oder bei
+      abgelehnter Zahlung — fällt der Workspace in den Starttarif.
+      :data:`ERINNERUNG_TAGE` vorher geht eine Mail (:func:`erinnerung_faellig`):
+      mit Zahlungsmethode die Ankündigung des Preises, ohne die Bitte, eine
+      zu hinterlegen. Die Person kann das Weiterlaufen bis zum Ende abwählen.
+
+18. **Privatkunden zahlen danach monatlich** (Entscheidung 21.10.2026,
+    § 309 Nr. 9 BGB): eine App für Verbraucher übergibt
+    ``nur_intervall="monthly"`` (bzw. ihren Namen dafür) an :func:`zuweisung`;
+    läuft der Tarif nach einem befristeten Rabatt bezahlt weiter, trägt der
+    Einmal-Code dann nur dieses Intervall. B2B-Apps übergeben nichts.
+
 Nur stdlib. Kein SQLAlchemy, kein FastAPI, keine App-Importe.
 """
 
@@ -115,6 +155,16 @@ __all__ = [
     "BEAT_ZEIT",
     "BERLIN",
     "BYOK_OHNE_KONTINGENT",
+    "DANACH_STARTTARIF",
+    "DANACH_WERTE",
+    "DANACH_ZAHLUNG_SPAETER",
+    "DANACH_ZAHLUNG_VORAB",
+    "ENDE_ABO_ANLEGEN",
+    "ENDE_STARTTARIF",
+    "ENDE_VERKAUF_ZU",
+    "ENDE_ZAHLUNG_ABGELEHNT",
+    "ENDE_ZAHLUNGSMITTEL_FEHLT",
+    "ERINNERUNG_TAGE",
     "FEHLER_PRAEFIX",
     "GESCHENK_PROZENT",
     "KI_KONTINGENTE",
@@ -137,6 +187,9 @@ __all__ = [
     "Zugang",
     "ZugangUngueltig",
     "Zuweisung",
+    "ende_entscheiden",
+    "erinnerung_faellig",
+    "geschenk_letzter_tag",
     "heute",
     "ist_abgelaufen",
     "nach_ende",
@@ -174,6 +227,26 @@ GESCHENK_PROZENT = 100
 RABATT_MONATE = "months"
 RABATT_DAUERHAFT = "forever"
 RABATT_LAUFZEITEN = (RABATT_MONATE, RABATT_DAUERHAFT)
+
+#: Was nach einem befristeten Rabatt passiert (Entscheidung 17).
+DANACH_STARTTARIF = "starttarif"
+DANACH_ZAHLUNG_VORAB = "zahlung_vorab"
+DANACH_ZAHLUNG_SPAETER = "zahlung_spaeter"
+DANACH_WERTE = (DANACH_STARTTARIF, DANACH_ZAHLUNG_VORAB, DANACH_ZAHLUNG_SPAETER)
+
+#: Tage vor dem Ende eines Geschenks mit ``zahlung_spaeter``, ab denen die
+#: Erinnerung geht — derselbe Vorlauf wie die Vorwarnung vor der ersten vollen
+#: Rechnung (``gutschein_vorwarnung.VORLAUF_TAGE``).
+ERINNERUNG_TAGE = 14
+
+#: Was am Ende eines Geschenks mit ``zahlung_spaeter`` geschieht (:func:`ende_entscheiden`).
+ENDE_ABO_ANLEGEN = "subscribe"
+ENDE_STARTTARIF = "start_plan"
+ENDE_ZAHLUNGSMITTEL_FEHLT = "no_payment_method"
+ENDE_VERKAUF_ZU = "sales_closed"
+#: Kein Ergebnis von :func:`ende_entscheiden`: die App setzt es selbst, wenn
+#: Stripe die erste Abbuchung ablehnt — danach Starttarif wie ohne Zahlungsmethode.
+ENDE_ZAHLUNG_ABGELEHNT = "payment_declined"
 
 #: KI-Kontingent der Einladung.
 KI_TARIF = "tarif"
@@ -214,6 +287,10 @@ class Fehler(str, Enum):
     TESTGUTHABEN_UNGUELTIG = "testguthaben_ungueltig"  # < 1 oder > TESTGUTHABEN_HOECHSTENS
     TAGE_OHNE_TESTGUTHABEN = "tage_ohne_testguthaben"
     TAGE_UNGUELTIG = "tage_ungueltig"  # < 1 oder > TAGE_HOECHSTENS
+    ENDE_UND_LAUFZEIT = "ende_und_laufzeit"  # letzter Tag als Datum UND Laufzeit
+    DANACH_FEHLT = "danach_fehlt"  # befristeter Rabatt ohne „danach“
+    DANACH_BEI_DAUERHAFT = "danach_bei_dauerhaft"  # „danach“ bei dauerhaftem Rabatt
+    ZAHLUNG_SPAETER_NUR_GESCHENK = "zahlung_spaeter_nur_geschenk"  # „Karte bis zum Ende“ unter 100 %
 
     @property
     def schluessel(self) -> str:
@@ -242,7 +319,10 @@ class Zugang:
     """Was eine Einladung beim Annehmen vergibt — geprüft, noch nicht angewandt.
 
     ``plan_code is None`` heißt Frei: das Konto entsteht wie bei jeder Registrierung.
-    ``rabatt_prozent is None`` heißt Geschenk (100 %), sonst 1–99 % per Gutschein.
+    ``rabatt_prozent is None`` heißt Geschenk ohne Laufzeit (Bestand, letzter
+    Tag als Datum). Mit Laufzeit steht der Satz da, auch 100 — ob es ein
+    Geschenk (Tarif von Hand) oder ein Gutschein (Checkout) wird, sagt
+    :attr:`ist_geschenk` (Entscheidung 17).
     """
 
     plan_code: Optional[str] = None
@@ -253,6 +333,7 @@ class Zugang:
     rabatt_prozent: Optional[int] = None
     rabatt_laufzeit: Optional[str] = None
     rabatt_monate: Optional[int] = None
+    rabatt_danach: Optional[str] = None
     ki_kontingent: str = KI_TARIF
     testguthaben: Optional[int] = None
     testguthaben_tage: Optional[int] = None
@@ -263,7 +344,12 @@ class Zugang:
 
     @property
     def ist_geschenk(self) -> bool:
-        return self.plan_code is not None and self.rabatt_prozent is None
+        """Tarif von Hand ohne Stripe — 100 % (oder ohne Satz), außer „bezahlt, Karte vorab“."""
+        if self.plan_code is None:
+            return False
+        if self.rabatt_prozent is None:
+            return True
+        return self.rabatt_prozent == GESCHENK_PROZENT and self.rabatt_danach != DANACH_ZAHLUNG_VORAB
 
 
 @dataclass(frozen=True)
@@ -280,6 +366,11 @@ class EinladungsGutschein:
     plans: tuple[str, ...]
     max_redemptions: int = 1
     new_customers_only: bool = True
+    #: ``danach = starttarif`` bei 1–99 %: die App beendet das Abo genau zum
+    #: Ende des Rabatts (Stripe ``cancel_at``), es läuft nicht bezahlt weiter.
+    endet_mit_rabatt: bool = False
+    #: Leer = jedes Intervall; sonst nur diese (Privatkunden nach dem Rabatt monatlich).
+    intervals: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -299,6 +390,9 @@ class Zuweisung:
     byok_betriebsart: Optional[str] = None
     #: Credits für ein Paket der Quelle ``test`` mit :func:`testguthaben_gueltig_bis`.
     testguthaben: Optional[int] = None
+    #: Nur beim Geschenk mit ``zahlung_spaeter``: die App merkt es am Anker
+    #: (``manual_plan_danach``) und entscheidet am Ende mit :func:`ende_entscheiden`.
+    danach: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -345,6 +439,7 @@ def pruefe_zugang(
     rabatt_prozent: Optional[int] = None,
     rabatt_laufzeit: Optional[str] = None,
     rabatt_monate: Optional[int] = None,
+    rabatt_danach: Optional[str] = None,
     ki_kontingent: str = KI_TARIF,
     testguthaben: Optional[int] = None,
     testguthaben_tage: Optional[int] = None,
@@ -362,6 +457,8 @@ def pruefe_zugang(
         raise ValueError(f"Unbekanntes KI-Kontingent {ki_kontingent!r}")
     if rabatt_laufzeit is not None and rabatt_laufzeit not in RABATT_LAUFZEITEN:
         raise ValueError(f"Unbekannte Rabattlaufzeit {rabatt_laufzeit!r}")
+    if rabatt_danach is not None and rabatt_danach not in DANACH_WERTE:
+        raise ValueError(f"Unbekanntes „danach“ {rabatt_danach!r}")
     gemeinsam = set(persoenliche_tarife) & set(account_tarife)
     if gemeinsam:
         raise ValueError(f"Tarif(e) {sorted(gemeinsam)} zugleich persönlich und Account — die App muss entscheiden")
@@ -376,7 +473,7 @@ def pruefe_zugang(
         if (
             plan_until is not None or name is not None or account_seats is not None
             or rabatt_prozent is not None or rabatt_laufzeit is not None or rabatt_monate is not None
-            or ki_angabe
+            or rabatt_danach is not None or ki_angabe
         ):
             raise ZugangUngueltig(Fehler.OHNE_TARIF)
         return Zugang()
@@ -385,8 +482,14 @@ def pruefe_zugang(
         raise ZugangUngueltig(Fehler.TARIF_UNBEKANNT)
     pruefe_enddatum(plan_until, am=am)
 
-    rabatt = _pruefe_rabatt(rabatt_prozent, rabatt_laufzeit, rabatt_monate)
-    if rabatt is not None and (plan_until is not None or account_seats is not None or ki_angabe):
+    rabatt = _pruefe_rabatt(rabatt_prozent, rabatt_laufzeit, rabatt_monate, rabatt_danach)
+    if rabatt is not None and plan_until is not None:
+        # Mit Laufzeit kommt der letzte Tag aus den Monaten (Entscheidung 16).
+        raise ZugangUngueltig(
+            Fehler.ENDE_UND_LAUFZEIT if rabatt == GESCHENK_PROZENT else Fehler.NUR_GESCHENK
+        )
+    geschenk = rabatt is None or (rabatt == GESCHENK_PROZENT and rabatt_danach != DANACH_ZAHLUNG_VORAB)
+    if not geschenk and (account_seats is not None or ki_angabe):
         raise ZugangUngueltig(Fehler.NUR_GESCHENK)
     if ki_angabe:
         _pruefe_ki(ki_kontingent, testguthaben, testguthaben_tage, ki_waehlbar=ki_waehlbar)
@@ -394,6 +497,7 @@ def pruefe_zugang(
         "rabatt_prozent": rabatt,
         "rabatt_laufzeit": rabatt_laufzeit if rabatt is not None else None,
         "rabatt_monate": rabatt_monate if rabatt is not None else None,
+        "rabatt_danach": rabatt_danach if rabatt is not None else None,
         "ki_kontingent": ki_kontingent,
         "testguthaben": testguthaben,
         "testguthaben_tage": testguthaben_tage,
@@ -412,21 +516,36 @@ def pruefe_zugang(
 
 
 def _pruefe_rabatt(
-    prozent: Optional[int], laufzeit: Optional[str], monate: Optional[int]
+    prozent: Optional[int], laufzeit: Optional[str], monate: Optional[int], danach: Optional[str]
 ) -> Optional[int]:
-    """Rabatt der Einladung (Entscheidungen 10, 11); ``None`` = Geschenk."""
-    if prozent is None or prozent == GESCHENK_PROZENT:
-        if laufzeit is not None or monate is not None:
+    """Rabatt der Einladung (Entscheidungen 10, 11, 16, 17).
+
+    ``None`` = Geschenk ohne Laufzeit (Bestand: 100 % oder keine Angabe, ohne
+    Laufzeit, letzter Tag höchstens als Datum). Mit Laufzeit kommt der Satz
+    zurück, auch 100.
+    """
+    if prozent is None or (prozent == GESCHENK_PROZENT and laufzeit is None):
+        if laufzeit is not None or monate is not None or danach is not None:
             raise ZugangUngueltig(Fehler.LAUFZEIT_OHNE_RABATT)
         return None
-    if not 1 <= prozent < GESCHENK_PROZENT:
+    if not 1 <= prozent <= GESCHENK_PROZENT:
         raise ZugangUngueltig(Fehler.RABATT_UNGUELTIG)
     if laufzeit is None:
         raise ZugangUngueltig(Fehler.RABATT_LAUFZEIT_FEHLT)
-    if laufzeit == RABATT_MONATE and (monate is None or monate < 1):
-        raise ZugangUngueltig(Fehler.RABATT_MONATE_FEHLEN)
-    if laufzeit == RABATT_DAUERHAFT and monate is not None:
-        raise ZugangUngueltig(Fehler.RABATT_MONATE_BEI_DAUERHAFT)
+    if laufzeit == RABATT_MONATE:
+        if monate is None or monate < 1:
+            raise ZugangUngueltig(Fehler.RABATT_MONATE_FEHLEN)
+        if danach is None:
+            raise ZugangUngueltig(Fehler.DANACH_FEHLT)
+        if danach == DANACH_ZAHLUNG_SPAETER and prozent != GESCHENK_PROZENT:
+            # Unter 100 % zahlt die Person ab dem ersten Monat im Checkout —
+            # die Zahlungsmethode ist dann ohnehin schon da.
+            raise ZugangUngueltig(Fehler.ZAHLUNG_SPAETER_NUR_GESCHENK)
+    else:
+        if monate is not None:
+            raise ZugangUngueltig(Fehler.RABATT_MONATE_BEI_DAUERHAFT)
+        if danach is not None:
+            raise ZugangUngueltig(Fehler.DANACH_BEI_DAUERHAFT)
     return prozent
 
 
@@ -448,12 +567,23 @@ def _pruefe_ki(
             raise ZugangUngueltig(Fehler.TAGE_UNGUELTIG, hoechstens=TAGE_HOECHSTENS)
 
 
-def zuweisung(zugang: Zugang, *, abo_laeuft: bool = False) -> Zuweisung:
-    """Was beim Annehmen gesetzt wird (Entscheidungen 2, 6, 7) — ohne Speicher.
+def zuweisung(
+    zugang: Zugang,
+    *,
+    abo_laeuft: bool = False,
+    angenommen_am: Optional[date] = None,
+    nur_intervall: Optional[str] = None,
+) -> Zuweisung:
+    """Was beim Annehmen gesetzt wird (Entscheidungen 2, 6, 7, 16–18) — ohne Speicher.
 
     ``abo_laeuft``: der Anker, an dem der Tarif landen würde, hat schon ein
     Stripe-Abo mit freischaltendem Status (``plan_freigabe.schaltet_frei``).
     Bei einem neuen Konto bzw. neuen Account ist das nie der Fall.
+    ``angenommen_am``: Berliner Kalendertag des Annehmens — Pflicht beim
+    Geschenk mit Laufzeit in Monaten (daraus der letzte Tag).
+    ``nur_intervall``: Apps für Privatkunden — läuft der Tarif nach einem
+    befristeten Rabatt bezahlt weiter, gilt der Einmal-Code nur für dieses
+    Intervall (Entscheidung 18).
     """
     if zugang.ist_frei:
         return Zuweisung(anker=None)
@@ -463,6 +593,9 @@ def zuweisung(zugang: Zugang, *, abo_laeuft: bool = False) -> Zuweisung:
         # Account-Tarif mit dem Namen aus der Einladung), der Tarif kommt aus
         # dem Checkout. Kein Tarif von Hand — also auch kein Konflikt mit einem Abo.
         assert zugang.rabatt_prozent is not None and zugang.rabatt_laufzeit is not None
+        befristet = zugang.rabatt_laufzeit == RABATT_MONATE
+        endet = befristet and zugang.rabatt_danach == DANACH_STARTTARIF
+        bezahlt_weiter = befristet and zugang.rabatt_danach == DANACH_ZAHLUNG_VORAB
         return Zuweisung(
             anker=None,
             account_name=account_name,
@@ -471,21 +604,79 @@ def zuweisung(zugang: Zugang, *, abo_laeuft: bool = False) -> Zuweisung:
                 discount_duration=zugang.rabatt_laufzeit,
                 discount_months=zugang.rabatt_monate,
                 plans=(zugang.plan_code,) if zugang.plan_code else (),
+                endet_mit_rabatt=endet,
+                intervals=(nur_intervall,) if bezahlt_weiter and nur_intervall else (),
             ),
         )
     if abo_laeuft:
         raise ZugangUngueltig(Fehler.ABO_LAEUFT)
+    bis = zugang.plan_until
+    if zugang.rabatt_laufzeit == RABATT_MONATE:
+        if angenommen_am is None:
+            raise ValueError("Geschenk mit Laufzeit in Monaten braucht angenommen_am — daraus der letzte Tag")
+        assert zugang.rabatt_monate is not None
+        bis = geschenk_letzter_tag(angenommen_am, zugang.rabatt_monate)
     ohne = zugang.ki_kontingent == KI_OHNE
     return Zuweisung(
         anker=Anker.ACCOUNT if zugang.ist_account else Anker.PERSON,
         plan_code=zugang.plan_code,
         plan_source=PLAN_SOURCE_MANUELL,
-        manual_plan_until=zugang.plan_until,
+        manual_plan_until=bis,
         account_name=account_name,
         ki_kontingent=zugang.ki_kontingent,
         byok_betriebsart=BYOK_OHNE_KONTINGENT if ohne else None,
         testguthaben=zugang.testguthaben,
+        danach=DANACH_ZAHLUNG_SPAETER if zugang.rabatt_danach == DANACH_ZAHLUNG_SPAETER else None,
     )
+
+
+def geschenk_letzter_tag(angenommen_am: date, monate: int) -> date:
+    """Letzter Tag eines Geschenks über ``monate`` Monate, einschließlich (Entscheidung 16).
+
+    Angenommen am 21.10.2026, 24 Monate → letzter Tag 20.10.2028; ab dem
+    21.10.2028 gilt der Starttarif (bzw. das Abo). Der 31. plus ein Monat ist
+    der letzte Tag des Folgemonats — wie Stripe die Verlängerung legt.
+    """
+    if monate < 1:
+        raise ValueError("monate muss mindestens 1 sein")
+    jahr = angenommen_am.year + (angenommen_am.month - 1 + monate) // 12
+    monat = (angenommen_am.month - 1 + monate) % 12 + 1
+    schalt = jahr % 4 == 0 and (jahr % 100 != 0 or jahr % 400 == 0)
+    letzter = [31, 29 if schalt else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31][monat - 1]
+    return date(jahr, monat, min(angenommen_am.day, letzter)) - timedelta(days=1)
+
+
+def ende_entscheiden(*, zahlungsmittel: bool, verkauf_offen: bool) -> str:
+    """Am Ende eines Geschenks mit ``zahlung_spaeter``: Abo anlegen oder Starttarif?
+
+    Nur der Lauf :data:`BEAT_NAME` fragt das, für Anker mit
+    ``manual_plan_danach = zahlung_spaeter``. Ohne Zahlungsmethode gibt es kein
+    Abo — der Workspace fällt in den Starttarif wie bei ``starttarif``
+    (:data:`ENDE_ZAHLUNGSMITTEL_FEHLT`). Ist der Verkauf geschlossen (Closed
+    Beta), legt die App kein Abo an (:data:`ENDE_VERKAUF_ZU`) — sie loggt es
+    laut, die Person fällt in den Starttarif. Lehnt Stripe die erste
+    Abbuchung ab, meldet die App :data:`ENDE_ZAHLUNG_ABGELEHNT` und setzt
+    ebenfalls den Starttarif.
+    """
+    if not verkauf_offen:
+        return ENDE_VERKAUF_ZU
+    if not zahlungsmittel:
+        return ENDE_ZAHLUNGSMITTEL_FEHLT
+    return ENDE_ABO_ANLEGEN
+
+
+def erinnerung_faellig(letzter_tag: date, *, schon_erinnert: bool, am: date) -> bool:
+    """Geht heute die Erinnerung vor dem Ende eines Geschenks mit ``zahlung_spaeter``?
+
+    Fenster: die letzten :data:`ERINNERUNG_TAGE` Tage bis einschließlich des
+    letzten Tags, Berliner Kalendertage. Höchstens einmal (``schon_erinnert``)
+    — die App merkt den Zeitpunkt am Anker und schickt erst nach dem Commit.
+    Wer erst im Fenster annimmt (Geschenk kürzer als der Vorlauf), bekommt sie
+    am nächsten Lauf.
+    """
+    if schon_erinnert:
+        return False
+    return letzter_tag - timedelta(days=ERINNERUNG_TAGE - 1) <= am <= letzter_tag
 
 
 def testguthaben_gueltig_bis(zugang: Zugang, *, angenommen_am: date) -> Optional[datetime]:
@@ -533,6 +724,7 @@ def vorschau(zugang: Zugang) -> Optional[dict[str, object]]:
         "rabatt_prozent": zugang.rabatt_prozent,
         "rabatt_laufzeit": zugang.rabatt_laufzeit,
         "rabatt_monate": zugang.rabatt_monate,
+        "rabatt_danach": zugang.rabatt_danach,
         "ki_kontingent": zugang.ki_kontingent,
         "testguthaben": zugang.testguthaben,
     }
