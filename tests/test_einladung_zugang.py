@@ -200,7 +200,7 @@ def test_manual_ist_was_plan_freigabe_vor_webhooks_schuetzt() -> None:
 def test_vorschau_nennt_tarif_tag_und_account_aber_keine_plaetze() -> None:
     v = ez.vorschau(_pruefe(plan_code="team", account_name="Familie", account_seats=4, plan_until=HEUTE))
     ohne_rabatt = {"rabatt_prozent": None, "rabatt_laufzeit": None, "rabatt_monate": None,
-                   "ki_kontingent": "tarif", "testguthaben": None}
+                   "rabatt_danach": None, "ki_kontingent": "tarif", "testguthaben": None}
     assert v == {"plan_code": "team", "plan_until": "2026-10-14", "account_name": "Familie", **ohne_rabatt}
     assert ez.vorschau(_pruefe(plan_code="einzel")) == {
         "plan_code": "einzel", "plan_until": None, "account_name": None, **ohne_rabatt}
@@ -247,6 +247,7 @@ def test_fehlerschluessel() -> None:
         "rabatt_monate_bei_dauerhaft", "laufzeit_ohne_rabatt", "nur_geschenk",
         "ki_nicht_waehlbar", "testguthaben_nur_ohne_kontingent", "testguthaben_ungueltig",
         "tage_ohne_testguthaben", "tage_ungueltig",
+        "ende_und_laufzeit", "danach_fehlt", "danach_bei_dauerhaft", "zahlung_spaeter_nur_geschenk",
     }
 
 
@@ -284,14 +285,15 @@ def test_rabatt_wird_einmal_gutschein_ohne_tarif_von_hand() -> None:
 
 def test_rabatt_beim_accounttarif_traegt_den_namen() -> None:
     w = ez.zuweisung(_pruefe(plan_code="team", account_name="Familie", rabatt_prozent=20,
-                             rabatt_laufzeit="months", rabatt_monate=12))
+                             rabatt_laufzeit="months", rabatt_monate=12, rabatt_danach="zahlung_vorab"))
     assert w.account_name == "Familie" and w.gutschein is not None
     assert (w.gutschein.discount_duration, w.gutschein.discount_months) == ("months", 12)
 
 
 def test_rabatt_ist_nie_abo_konflikt() -> None:
     """Kein Tarif von Hand — also kein Comp über ein laufendes Abo (Entscheidung 7)."""
-    z = _pruefe(plan_code="einzel", rabatt_prozent=50, rabatt_laufzeit="months", rabatt_monate=3)
+    z = _pruefe(plan_code="einzel", rabatt_prozent=50, rabatt_laufzeit="months", rabatt_monate=3,
+                rabatt_danach="zahlung_vorab")
     assert ez.zuweisung(z, abo_laeuft=True).gutschein is not None
 
 
@@ -449,7 +451,206 @@ def test_nach_ende_kontingent_wieder_vom_tarif() -> None:
 
 
 def test_vorschau_nennt_rabatt_und_testguthaben() -> None:
-    v = ez.vorschau(_pruefe(plan_code="einzel", rabatt_prozent=30, rabatt_laufzeit="months", rabatt_monate=12))
+    v = ez.vorschau(_pruefe(plan_code="einzel", rabatt_prozent=30, rabatt_laufzeit="months", rabatt_monate=12,
+                            rabatt_danach="zahlung_vorab"))
     assert v is not None and (v["rabatt_prozent"], v["rabatt_laufzeit"], v["rabatt_monate"]) == (30, "months", 12)
     v = ez.vorschau(_pruefe(plan_code="einzel", ki_kontingent="ohne", testguthaben=5000, ki_waehlbar=True))
     assert v is not None and (v["ki_kontingent"], v["testguthaben"]) == ("ohne", 5000)
+
+
+# --- Entscheidungen 16–18: Laufzeit auch bei 100 %, und was danach kommt ------
+
+
+def _monate(prozent: int, danach: str | None, monate: int = 24, **extra):
+    return _pruefe(plan_code="einzel", rabatt_prozent=prozent, rabatt_laufzeit="months",
+                   rabatt_monate=monate, rabatt_danach=danach, **extra)
+
+
+def test_geschenk_in_monaten_rechnet_den_letzten_tag_beim_annehmen() -> None:
+    z = _monate(100, "starttarif")
+    assert z.ist_geschenk and z.rabatt_prozent == 100
+    w = ez.zuweisung(z, angenommen_am=date(2026, 10, 21))
+    assert (w.plan_source, w.manual_plan_until, w.gutschein, w.danach) == (
+        "manual", date(2028, 10, 20), None, None)
+
+
+def test_geschenk_in_monaten_ohne_annahmetag_ist_programmierfehler() -> None:
+    with pytest.raises(ValueError):
+        ez.zuweisung(_monate(100, "starttarif"))
+
+
+@pytest.mark.parametrize(("angenommen", "monate", "letzter"), [
+    (date(2026, 10, 21), 1, date(2026, 11, 20)),
+    (date(2026, 1, 31), 1, date(2026, 2, 27)),   # 31. + 1 Monat = 28.02., letzter Tag davor
+    (date(2027, 1, 31), 13, date(2028, 2, 28)),  # Schaltjahr: 29.02. ist der erste Tag danach
+    (date(2026, 10, 21), 120, date(2036, 10, 20)),
+])
+def test_geschenk_letzter_tag(angenommen: date, monate: int, letzter: date) -> None:
+    assert ez.geschenk_letzter_tag(angenommen, monate) == letzter
+
+
+def test_geschenk_letzter_tag_braucht_einen_monat() -> None:
+    with pytest.raises(ValueError):
+        ez.geschenk_letzter_tag(HEUTE, 0)
+
+
+def test_geschenk_dauerhaft_ist_unbefristet_ohne_danach() -> None:
+    z = _pruefe(plan_code="einzel", rabatt_prozent=100, rabatt_laufzeit="forever")
+    w = ez.zuweisung(z)
+    assert z.ist_geschenk and (w.manual_plan_until, w.danach) == (None, None)
+
+
+def test_bestand_geschenk_mit_datum_bleibt_gueltig() -> None:
+    """Gegenprobe zu ENDE_UND_LAUFZEIT: ohne Laufzeit trägt das Geschenk weiter ein Datum."""
+    w = ez.zuweisung(_pruefe(plan_code="einzel", rabatt_prozent=100, plan_until=HEUTE))
+    assert w.manual_plan_until == HEUTE
+
+
+@pytest.mark.parametrize("prozent", [100, 30])
+def test_datum_und_laufzeit_zugleich_abgelehnt(prozent: int) -> None:
+    code = _absage(plan_code="einzel", rabatt_prozent=prozent, rabatt_laufzeit="months",
+                   rabatt_monate=6, rabatt_danach="starttarif", plan_until=HEUTE).code
+    assert code is (ez.Fehler.ENDE_UND_LAUFZEIT if prozent == 100 else ez.Fehler.NUR_GESCHENK)
+
+
+@pytest.mark.parametrize("prozent", [100, 30])
+def test_befristet_braucht_danach(prozent: int) -> None:
+    assert _absage(plan_code="einzel", rabatt_prozent=prozent, rabatt_laufzeit="months",
+                   rabatt_monate=6).code is ez.Fehler.DANACH_FEHLT
+
+
+@pytest.mark.parametrize("prozent", [100, 30])
+def test_dauerhaft_traegt_kein_danach(prozent: int) -> None:
+    assert _absage(plan_code="einzel", rabatt_prozent=prozent, rabatt_laufzeit="forever",
+                   rabatt_danach="starttarif").code is ez.Fehler.DANACH_BEI_DAUERHAFT
+
+
+def test_danach_ohne_laufzeit_abgelehnt() -> None:
+    assert _absage(plan_code="einzel", rabatt_prozent=100, rabatt_danach="starttarif").code \
+        is ez.Fehler.LAUFZEIT_OHNE_RABATT
+
+
+def test_danach_ohne_tarif_abgelehnt() -> None:
+    assert _absage(rabatt_danach="starttarif").code is ez.Fehler.OHNE_TARIF
+
+
+def test_unbekanntes_danach_ist_programmierfehler() -> None:
+    with pytest.raises(ValueError):
+        _monate(100, "irgendwann")
+
+
+def test_zahlung_spaeter_nur_bei_hundert_prozent() -> None:
+    assert _absage(plan_code="einzel", rabatt_prozent=30, rabatt_laufzeit="months",
+                   rabatt_monate=6, rabatt_danach="zahlung_spaeter").code is ez.Fehler.ZAHLUNG_SPAETER_NUR_GESCHENK
+
+
+def test_zahlung_spaeter_ist_geschenk_mit_merker() -> None:
+    z = _monate(100, "zahlung_spaeter", monate=12)
+    w = ez.zuweisung(z, angenommen_am=date(2026, 10, 21))
+    assert z.ist_geschenk
+    assert (w.plan_source, w.manual_plan_until, w.danach, w.gutschein) == (
+        "manual", date(2027, 10, 20), "zahlung_spaeter", None)
+
+
+def test_zahlung_spaeter_darf_was_ein_geschenk_darf() -> None:
+    z = _pruefe(plan_code="team", account_name="F", account_seats=3, rabatt_prozent=100,
+                rabatt_laufzeit="months", rabatt_monate=12, rabatt_danach="zahlung_spaeter",
+                ki_kontingent="ohne", testguthaben=1000, ki_waehlbar=True)
+    assert z.ist_geschenk and z.account_seats == 3
+
+
+def test_hundert_prozent_zahlung_vorab_wird_gutschein() -> None:
+    z = _monate(100, "zahlung_vorab")
+    w = ez.zuweisung(z)
+    assert not z.ist_geschenk
+    assert (w.anker, w.plan_source, w.manual_plan_until) == (None, None, None)
+    assert w.gutschein == ez.EinladungsGutschein(
+        discount_percent=100, discount_duration="months", discount_months=24, plans=("einzel",),
+        endet_mit_rabatt=False, intervals=())
+
+
+@pytest.mark.parametrize("extra", [
+    {"account_seats": 3, "plan_code": "team", "account_name": "F"},
+    {"ki_kontingent": "ohne", "ki_waehlbar": True},
+])
+def test_hundert_prozent_zahlung_vorab_traegt_nichts_vom_geschenk(extra: dict) -> None:
+    felder = {"plan_code": "einzel", "rabatt_prozent": 100, "rabatt_laufzeit": "months",
+              "rabatt_monate": 6, "rabatt_danach": "zahlung_vorab", **extra}
+    assert _absage(**felder).code is ez.Fehler.NUR_GESCHENK
+
+
+def test_rabatt_danach_starttarif_beendet_das_abo() -> None:
+    g = ez.zuweisung(_monate(30, "starttarif", monate=6)).gutschein
+    assert g is not None and g.endet_mit_rabatt and g.intervals == ()
+
+
+def test_rabatt_danach_bezahlt_laeuft_weiter() -> None:
+    g = ez.zuweisung(_monate(30, "zahlung_vorab", monate=6)).gutschein
+    assert g is not None and not g.endet_mit_rabatt
+
+
+@pytest.mark.parametrize(("prozent", "danach", "laufzeit", "erwartet"), [
+    (100, "zahlung_vorab", "months", ("monthly",)),
+    (30, "zahlung_vorab", "months", ("monthly",)),
+    (30, "starttarif", "months", ()),   # endet mit dem Rabatt — kein Weiterlaufen
+    (30, None, "forever", ()),          # kein „danach“, kein Preissprung
+])
+def test_privatkunden_zahlen_danach_monatlich(prozent, danach, laufzeit, erwartet) -> None:
+    z = _pruefe(plan_code="einzel", rabatt_prozent=prozent, rabatt_laufzeit=laufzeit,
+                rabatt_monate=6 if laufzeit == "months" else None, rabatt_danach=danach)
+    g = ez.zuweisung(z, nur_intervall="monthly").gutschein
+    assert g is not None and g.intervals == erwartet
+
+
+def test_b2b_ohne_intervallgrenze() -> None:
+    g = ez.zuweisung(_monate(100, "zahlung_vorab")).gutschein
+    assert g is not None and g.intervals == ()
+
+
+def test_vorschau_nennt_danach() -> None:
+    v = ez.vorschau(_monate(100, "zahlung_spaeter"))
+    assert v is not None and (v["rabatt_prozent"], v["rabatt_monate"], v["rabatt_danach"]) == (
+        100, 24, "zahlung_spaeter")
+
+
+@pytest.mark.parametrize(("zahlungsmittel", "offen", "ergebnis"), [
+    (True, True, ez.ENDE_ABO_ANLEGEN),
+    (False, True, ez.ENDE_ZAHLUNGSMITTEL_FEHLT),
+    (True, False, ez.ENDE_VERKAUF_ZU),
+    (False, False, ez.ENDE_VERKAUF_ZU),
+])
+def test_ende_entscheiden(zahlungsmittel: bool, offen: bool, ergebnis: str) -> None:
+    assert ez.ende_entscheiden(zahlungsmittel=zahlungsmittel, verkauf_offen=offen) == ergebnis
+
+
+@pytest.mark.parametrize(("am", "erinnert", "erwartet"), [
+    (date(2027, 10, 6), False, False),   # 15 Tage vorher: zu früh
+    (date(2027, 10, 7), False, True),    # 14 Tage einschließlich des letzten Tags
+    (date(2027, 10, 20), False, True),   # letzter Tag
+    (date(2027, 10, 21), False, False),  # vorbei — das Ende entscheidet der Lauf
+    (date(2027, 10, 10), True, False),   # schon erinnert
+])
+def test_erinnerung_faellig(am: date, erinnert: bool, erwartet: bool) -> None:
+    assert ez.erinnerung_faellig(date(2027, 10, 20), schon_erinnert=erinnert, am=am) is erwartet
+
+
+def test_erinnerung_wie_vorwarnung() -> None:
+    import gutschein_vorwarnung as v
+
+    assert ez.ERINNERUNG_TAGE == v.VORLAUF_TAGE
+
+
+def test_einladungs_gutschein_ueber_hundert_prozent_besteht_die_gutscheinregeln() -> None:
+    import gutschein_regeln as g
+
+    c = ez.zuweisung(_monate(100, "zahlung_vorab")).gutschein
+    assert c is not None
+    assert g.pruefe_rabatt(discount_percent=c.discount_percent, discount_duration=c.discount_duration,
+                           discount_months=c.discount_months, max_redemptions=c.max_redemptions,
+                           redeemable_until=None).gueltig
+
+
+def test_neue_fehler_haben_schluessel() -> None:
+    for f in (ez.Fehler.ENDE_UND_LAUFZEIT, ez.Fehler.DANACH_FEHLT, ez.Fehler.DANACH_BEI_DAUERHAFT,
+              ez.Fehler.ZAHLUNG_SPAETER_NUR_GESCHENK):
+        assert f.schluessel.startswith("errors.admin.invitation.zugang.")
